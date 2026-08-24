@@ -40,6 +40,21 @@
   <div id="layout">
     <!-- 左侧边栏 -->
     <aside id="sidebar">
+      <!-- 工作区卡片 -->
+      <div class="workspace-card">
+        <div class="ws-head">
+          <span class="ws-label">工作区</span>
+          <button class="btn tiny" id="btn-ws-pick" title="选择工作区文件夹">📂 选择</button>
+        </div>
+        <div class="ws-path" id="ws-path" title="">~</div>
+        <div class="ws-actions">
+          <label class="ws-check" title="默认只显示当前工作区（含子目录）的会话">
+            <input type="checkbox" id="chk-all-sessions" /> 全部会话
+          </label>
+          <button class="btn tiny" id="btn-ws-open" title="在 Finder 中打开工作区">📁 打开</button>
+        </div>
+      </div>
+
       <button class="btn primary wide" id="btn-new">＋ 新建会话</button>
       <button class="btn ghost wide" id="btn-refresh-sessions">⟳ 刷新会话</button>
 

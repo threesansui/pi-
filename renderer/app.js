@@ -16,6 +16,7 @@ const api = window.piDesktop;
 const state = {
   messages: [],        // { role, content, timestamp, usage, streaming, toolCalls: Map }
   streamingMsg: null,  // 正在流式组装中的 assistant 消息
+  streamingMsgEl: null, // 流式消息对应的 DOM 节点（增量更新用）
   streamingBuffer: [], // contentIndex -> { text, thinking, toolCallArgs }
   tools: new Map(),    // toolCallId -> { name, args, output, isError, state }
   model: null,
@@ -26,6 +27,8 @@ const state = {
   sessions: [],
   currentSessionFile: null,
   commands: [],
+  workspace: null,     // 当前工作区路径
+  showAllSessions: false,
 };
 
 const $ = (id) => document.getElementById(id);
@@ -311,6 +314,145 @@ async function cmd(obj) {
   return res;
 }
 
+// ---------------------------------------------------------------- 增量渲染
+//
+// 流式输出的性能核心：
+//  - 消息结构变化（新增消息/工具卡）→ 局部 append/replace，绝不重建整列表
+//  - 流式文本/思考增量 → requestAnimationFrame 节流，每帧只更新一次 DOM
+//  - 只有真正新增的 .msg 节点才会播放 fade-in 动画（消除闪烁）
+
+let streamRaf = 0;
+
+function scheduleStreamingRender() {
+  if (streamRaf) return;
+  streamRaf = requestAnimationFrame(() => {
+    streamRaf = 0;
+    updateStreamingDOM();
+  });
+}
+
+/** 只更新流式消息的思考块/文本/工具卡 DOM，不动其它消息 */
+function updateStreamingDOM() {
+  const sm = state.streamingMsg;
+  const el = state.streamingMsgEl;
+  if (!sm || !el || !el.isConnected) return;
+
+  const bubble = el.querySelector(".bubble");
+  if (!bubble) return;
+
+  // 1) 思考块：按需补齐 details，增量写入内容
+  const thinks = sm.content.filter((b) => b.type === "thinking");
+  let tDetails = [...bubble.querySelectorAll(":scope > details.thinking-block")];
+  while (tDetails.length < thinks.length) {
+    const d = document.createElement("details");
+    d.className = "thinking-block";
+    const body = document.createElement("div");
+    body.className = "thinking-body";
+    d.appendChild(body);
+    const anchor = bubble.querySelector(".assistant-text, .tool-card");
+    bubble.insertBefore(d, anchor);
+    tDetails.push(d);
+  }
+  thinks.forEach((b, i) => {
+    const body = tDetails[i].querySelector(".thinking-body");
+    if (body && body.textContent !== b.thinking) body.textContent = b.thinking;
+  });
+
+  // 2) 文本：复用同一节点，仅当内容变化时重设 innerHTML
+  const text = sm.content.filter((b) => b.type === "text").map((b) => b.text).join("");
+  let tEl = bubble.querySelector(":scope > .assistant-text");
+  if (text) {
+    if (!tEl) {
+      tEl = document.createElement("div");
+      tEl.className = "assistant-text";
+      const firstCard = bubble.querySelector(":scope > .tool-card");
+      bubble.insertBefore(tEl, firstCard);
+    }
+    const html = renderMarkdown(text);
+    if (tEl.innerHTML !== html) tEl.innerHTML = html;
+    tEl.classList.add("stream-cursor");
+  } else if (tEl) {
+    tEl.remove();
+  }
+
+  // 3) 工具卡兜底（toolcall_end 时也会追加）
+  const toolBlocks = sm.content.filter((b) => b.type === "toolCall");
+  let cards = [...bubble.querySelectorAll(":scope > .tool-card")];
+  toolBlocks.forEach((tb, i) => {
+    if (!cards[i]) {
+      bubble.appendChild(renderToolCard(tb.id, tb.name, tb.args));
+      cards.push(bubble.lastElementChild);
+    }
+  });
+
+  if (isStuckToBottom()) scrollToBottom();
+}
+
+/** 局部追加一条消息的 DOM（新消息才有 fade-in 动画） */
+function appendMessageEl(msg) {
+  $("empty-state").hidden = true;
+  const node = renderMessage(msg);
+  $("messages").appendChild(node);
+  if (isStuckToBottom()) scrollToBottom();
+  return node;
+}
+
+/** 重建指定 index 的消息节点（低频场景：消息合并/定稿） */
+function rebuildMessageEl(index) {
+  const container = $("messages");
+  const node = renderMessage(state.messages[index]);
+  const old = container.children[index];
+  if (old && old.isConnected) old.replaceWith(node);
+  else container.appendChild(node);
+  return node;
+}
+
+/** 更新消息 meta 行（模型/时间/费用），无内容则移除 */
+function syncMsgMeta(el, msg) {
+  let meta = el.querySelector(":scope > .msg-meta");
+  const parts = [];
+  if (msg.model) parts.push(`<span>${escapeHtml(String(msg.model))}</span>`);
+  if (msg.timestamp) parts.push(`<span>${fmtTime(msg.timestamp)}</span>`);
+  if (msg.usage?.cost) parts.push(`<span>$${Number(msg.usage.cost.total ?? 0).toFixed(4)}</span>`);
+  if (parts.length) {
+    if (!meta) {
+      meta = document.createElement("div");
+      meta.className = "msg-meta";
+      el.appendChild(meta);
+    }
+    meta.innerHTML = parts.join("");
+  } else if (meta) {
+    meta.remove();
+  }
+}
+
+// ---- 工具输出节流（bash 等工具的高频输出流） ----
+
+const pendingToolOutputs = new Map();
+let toolRaf = 0;
+
+function scheduleToolOutput(id, text) {
+  pendingToolOutputs.set(id, text);
+  if (toolRaf) return;
+  toolRaf = requestAnimationFrame(() => {
+    toolRaf = 0;
+    for (const [tid, txt] of pendingToolOutputs) {
+      const el = document.querySelector(`.tool-card[data-tool-id="${tid}"] .tc-output`);
+      if (el) el.textContent = txt;
+    }
+    pendingToolOutputs.clear();
+  });
+}
+
+function updateToolOutput(id, text) {
+  const el = document.querySelector(`.tool-card[data-tool-id="${id}"] .tc-output`);
+  if (!el) {
+    renderMessages(); // 兜底：卡片不存在时全量重建
+    return;
+  }
+  el.textContent = text;
+}
+
 // ---------------------------------------------------------------- 事件流
 
 function handleEvent(ev) {
@@ -351,14 +493,16 @@ function handleEvent(ev) {
       state.tools.set(ev.toolCallId, {
         name: ev.toolName, args: ev.args, output: "", state: "running", isError: false,
       });
-      renderMessages();
+      // 卡片若不存在（顺序异常）则全量兜底，否则局部更新状态
+      if (!document.querySelector(`.tool-card[data-tool-id="${ev.toolCallId}"]`)) renderMessages();
+      else updateToolCard(ev.toolCallId);
       break;
     case "tool_execution_update": {
       const t = state.tools.get(ev.toolCallId);
       if (t) {
         const text = (ev.partialResult?.content ?? []).map((c) => c.text ?? "").join("");
         t.output = text;
-        renderMessages();
+        scheduleToolOutput(ev.toolCallId, text);
       }
       break;
     }
@@ -368,8 +512,9 @@ function handleEvent(ev) {
         t.state = "done";
         t.isError = !!ev.isError;
         t.output = (ev.result?.content ?? []).map((c) => c.text ?? "").join("");
+        updateToolOutput(ev.toolCallId, t.output);
       }
-      renderMessages();
+      updateToolCard(ev.toolCallId);
       refreshStats();
       break;
     }
@@ -408,8 +553,10 @@ function beginStreaming(msg) {
   } else {
     state.messages.push(state.streamingMsg);
     state.streamingMsg._buffer = state.streamingBuffer;
+    state.streamingMsgEl = appendMessageEl(state.streamingMsg);
   }
-  renderMessages();
+  // 已有内容（thinking/text 先到）→ 立即渲染一次
+  if (state.streamingBuffer.some((b) => b.text || b.thinking)) updateStreamingDOM();
 }
 
 function ensureBlock(idx) {
@@ -450,7 +597,7 @@ function applyDelta(delta) {
       break;
   }
   syncStreamingContent();
-  renderMessages();
+  scheduleStreamingRender(); // rAF 节流，每帧最多一次 DOM 更新
 }
 
 function syncStreamingContent() {
@@ -478,32 +625,45 @@ function updateStreamingUsage(usage) {
 
 function finalizeStreaming() {
   if (!state.streamingMsg) return;
-  state.streamingMsg.streaming = false;
-  state.streamingMsg._buffer = undefined;
+  const sm = state.streamingMsg;
+  const el = state.streamingMsgEl;
+  sm.streaming = false;
+  sm._buffer = undefined;
+  if (el && el.isConnected) {
+    const tEl = el.querySelector(".assistant-text");
+    if (tEl) tEl.classList.remove("stream-cursor");
+    syncMsgMeta(el, sm);
+  }
   state.streamingMsg = null;
   state.streamingBuffer = [];
+  state.streamingMsgEl = null;
 }
 
 function upsertMessage(msg) {
-  // 用 timestamp+role 近似去重；流式结束后直接追加
   const last = state.messages[state.messages.length - 1];
   if (state.streamingMsg && last === state.streamingMsg) {
-    state.streamingMsg = null;
-    state.streamingBuffer = [];
+    // 权威消息定稿：内容已在流式渲染中，只收尾（去光标 + meta）
     last.streaming = false;
     last.content = msg.content ?? last.content;
     last.usage = msg.usage ?? last.usage;
     last.model = msg.model ?? last.model;
-  } else if (last && last.role === msg.role && !last.streaming &&
+    updateStreamingDOM(); // 确保 rAF 队列里最后的 delta（如工具卡）已落到 DOM
+    finalizeStreaming();
+    return;
+  }
+  if (last && last.role === msg.role && !last.streaming &&
              Math.abs((last.timestamp ?? 0) - (msg.timestamp ?? 0)) < 2000) {
-    // 同角色且时间相近 → 合并（避免重复渲染）
+    // 同角色且时间相近 → 合并；内容未变则只更新 meta（避免定稿时无谓重建）
+    const contentChanged = JSON.stringify(last.content ?? null) !== JSON.stringify(msg.content ?? null);
     last.content = msg.content ?? last.content;
     last.usage = msg.usage ?? last.usage;
     last.model = msg.model ?? last.model;
-  } else {
-    state.messages.push({ ...msg, streaming: false });
+    if (contentChanged) rebuildMessageEl(state.messages.length - 1);
+    else syncMsgMeta(state.streamingMsgEl || $("messages").lastElementChild, last);
+    return;
   }
-  renderMessages();
+  state.messages.push({ ...msg, streaming: false });
+  appendMessageEl(state.messages[state.messages.length - 1]);
 }
 
 // ---------------------------------------------------------------- 顶栏状态
@@ -609,7 +769,7 @@ async function refreshStats() {
   markActiveSession();
 }
 
-async function refreshAll() {
+async function refreshAll(silent) {
   try {
     const [st, msgs] = await Promise.all([
       cmd({ type: "get_state" }),
@@ -627,23 +787,41 @@ async function refreshAll() {
     state.messages = msgs.data?.messages ?? [];
     state.streamingMsg = null;
     state.streamingBuffer = [];
+    state.streamingMsgEl = null;
     state.tools.clear();
     renderMessages();
     refreshModels();
     refreshThinking();
     refreshStats();
     refreshSessions();
+    return true;
   } catch (e) {
     console.error("refreshAll:", e);
-    toast(`加载失败: ${e.message}`, "error");
+    if (!silent) toast(`加载失败: ${e.message}`, "error");
+    return false;
   }
+}
+
+// pi 重启后 RPC 可能尚未就绪：延迟重试，直到成功
+let refreshRetry = 0;
+function retryRefreshAll() {
+  refreshAll(true).then((ok) => {
+    if (!ok && refreshRetry < 5) {
+      refreshRetry++;
+      setTimeout(retryRefreshAll, 1200);
+    } else {
+      refreshRetry = 0;
+    }
+  });
 }
 
 // ---------------------------------------------------------------- 会话列表
 
 async function refreshSessions() {
+  // 工作区过滤：默认只显示当前工作区（含子目录）的会话；勾选"全部会话"则显示所有
+  const filterDir = !state.showAllSessions && state.workspace ? state.workspace : null;
   try {
-    state.sessions = await api.listSessions();
+    state.sessions = await api.listSessions(filterDir);
   } catch {
     state.sessions = [];
   }
@@ -653,7 +831,7 @@ async function refreshSessions() {
   if (!state.sessions.length) {
     const div = document.createElement("div");
     div.className = "session-empty";
-    div.textContent = "暂无历史会话";
+    div.textContent = filterDir ? "该工作区暂无会话" : "暂无历史会话";
     list.appendChild(div);
     return;
   }
@@ -661,9 +839,50 @@ async function refreshSessions() {
   for (const s of state.sessions) {
     const item = document.createElement("div");
     item.className = "session-item";
+
+    // 名称行 + 删除按钮
+    const row = document.createElement("div");
+    row.className = "si-row";
     const nm = document.createElement("div");
     nm.className = "si-name";
     nm.textContent = s.name || s.file.split("/").pop().replace(/\.jsonl$/, "");
+    const del = document.createElement("button");
+    del.className = "si-del";
+    del.title = "删除会话";
+    const isActive = s.file === state.currentSessionFile;
+    if (isActive) {
+      del.disabled = true;
+      del.textContent = "●";
+      del.title = "当前会话不能删除";
+    } else {
+      del.textContent = "🗑";
+    }
+    let confirmTimer = null;
+    del.addEventListener("click", async (e) => {
+      e.stopPropagation();
+      if (del.textContent !== "确认?") {
+        del.textContent = "确认?";
+        del.classList.add("confirm");
+        clearTimeout(confirmTimer);
+        confirmTimer = setTimeout(() => {
+          del.textContent = "🗑";
+          del.classList.remove("confirm");
+        }, 2500);
+        return;
+      }
+      clearTimeout(confirmTimer);
+      const res = await api.deleteSession(s.file).catch(() => ({ ok: false, reason: "IPC 失败" }));
+      if (res?.ok) {
+        toast(res.trashed ? "已删除会话（可回收站恢复）" : "已删除会话", "info");
+        refreshSessions();
+      } else {
+        toast(`删除失败: ${res?.reason ?? "未知错误"}`, "error");
+        del.textContent = "🗑";
+        del.classList.remove("confirm");
+      }
+    });
+    row.append(nm, del);
+
     const sub = document.createElement("div");
     sub.className = "si-sub";
     const p = document.createElement("span");
@@ -673,7 +892,7 @@ async function refreshSessions() {
     t.className = "si-time";
     t.textContent = fmtAgo(s.mtime);
     sub.append(p, t);
-    item.append(nm, sub);
+    item.append(row, sub);
     item.addEventListener("click", () => switchSession(s.file));
     list.appendChild(item);
   }
@@ -714,9 +933,9 @@ async function sendMessage() {
   input.value = "";
   autoResize();
 
-  // 立即渲染用户消息
+  // 立即渲染用户消息（局部追加，不重建整列表）
   state.messages.push({ role: "user", content: text, timestamp: Date.now(), streaming: false });
-  renderMessages();
+  appendMessageEl(state.messages[state.messages.length - 1]);
 
   try {
     const res = await cmd({ type: "prompt", message: text });
@@ -751,6 +970,54 @@ async function exportHtml() {
   } catch (e) {
     toast(`导出失败: ${e.message}`, "error");
   }
+}
+
+// ---------------------------------------------------------------- 工作区
+
+/** 路径缩写：/Users/xxx/... → ~/... */
+function shortPath(p) {
+  if (!p) return "~";
+  return String(p).replace(/^\/Users\/[^/]+/, "~");
+}
+
+function renderWorkspace() {
+  const pathEl = $("ws-path");
+  const text = shortPath(state.workspace);
+  pathEl.textContent = text;
+  pathEl.title = state.workspace || "~";
+}
+
+async function pickWorkspace() {
+  if (state.isStreaming || state.isCompacting) {
+    toast("正在处理中，无法切换工作区（可先中止）", "warning");
+    return;
+  }
+  const dir = await api.pickWorkspace();
+  if (!dir) return;
+  try {
+    state.workspace = await api.setWorkspace(dir);
+    renderWorkspace();
+    toast(`工作区已切换至 ${shortPath(dir)}，重启 pi 引擎…`, "info");
+    refreshSessions();
+    // 等待 pi 重启完成（onStatus online 后 refreshAll 恢复界面）
+  } catch (e) {
+    toast(`切换失败: ${e.message}`, "error");
+  }
+}
+
+function initWorkspace() {
+  api.getWorkspace().then((ws) => {
+    state.workspace = ws || null;
+    renderWorkspace();
+  }).catch(() => {
+    renderWorkspace();
+  });
+  $("btn-ws-pick").addEventListener("click", pickWorkspace);
+  $("btn-ws-open").addEventListener("click", () => api.openWorkspace());
+  $("chk-all-sessions").addEventListener("change", (e) => {
+    state.showAllSessions = e.target.checked;
+    refreshSessions();
+  });
 }
 
 // ---------------------------------------------------------------- 扩展 UI 对话框
@@ -956,6 +1223,8 @@ function init() {
     if (s.online) {
       dot.className = "status-dot small idle";
       text.textContent = "pi 引擎在线";
+      // 工作区切换等场景下 pi 重启后恢复界面（静默，带重试）
+      retryRefreshAll();
     } else {
       dot.className = "status-dot small error";
       text.textContent = s.restarting ? "pi 重启中…" : "pi 已断开";
@@ -963,6 +1232,7 @@ function init() {
   });
   api.onLog((line) => console.log("[pi]", line));
 
+  initWorkspace();
   refreshAll();
 
   // 每 15s 静默刷新统计

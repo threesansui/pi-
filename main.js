@@ -8,7 +8,7 @@
  *  4. 会话目录扫描 / 桌面通知 / 冒烟测试模式
  */
 
-const { app, BrowserWindow, ipcMain, Menu, Notification, shell } = require("electron");
+const { app, BrowserWindow, ipcMain, Menu, Notification, shell, dialog } = require("electron");
 const { spawn } = require("node:child_process");
 const fs = require("node:fs");
 const path = require("node:path");
@@ -17,6 +17,8 @@ const crypto = require("node:crypto");
 
 const SESSIONS_DIR = path.join(os.homedir(), ".pi", "agent", "sessions");
 const SMOKE = process.env.PI_DESKTOP_SMOKE === "1";
+
+let workCwd = os.homedir(); // 当前工作区（pi 子进程的 cwd）
 
 let win = null;
 let pi = null;
@@ -46,7 +48,7 @@ function spawnPi() {
   }
   buf = "";
   pi = spawn("pi", ["--mode", "rpc"], {
-    cwd: os.homedir(),
+    cwd: workCwd,
     env: { ...process.env },
     stdio: ["pipe", "pipe", "pipe"],
   });
@@ -170,9 +172,10 @@ function respondUi(id, payload) {
 // 会话目录扫描
 // ---------------------------------------------------------------------------
 
-function listSessions() {
+function listSessions(filterDir) {
   const out = [];
   if (!fs.existsSync(SESSIONS_DIR)) return out;
+  const fdir = filterDir ? path.resolve(String(filterDir)) : null;
   for (const dir of fs.readdirSync(SESSIONS_DIR)) {
     const dpath = path.join(SESSIONS_DIR, dir);
     let st;
@@ -187,13 +190,20 @@ function listSessions() {
       const fp = path.join(dpath, f);
       let name = "";
       let created = 0;
+      let cwd = "";
       try {
         const first = fs.readFileSync(fp, "utf8").split("\n")[0];
         const h = JSON.parse(first);
         name = h.name || "";
         created = h.timestamp || 0;
+        cwd = h.cwd || "";
       } catch {
         /* header 不完整也没关系 */
+      }
+      // 工作区过滤：会话 header 的 cwd 必须等于工作区或其子目录
+      if (fdir) {
+        if (!cwd) continue;
+        if (cwd !== fdir && !cwd.startsWith(fdir + path.sep)) continue;
       }
       let mtime = 0;
       try {
@@ -205,6 +215,7 @@ function listSessions() {
         file: fp,
         label: dir.replace(/^--/, "").replace(/--$/, "").replace(/--/g, "/"),
         name,
+        cwd,
         mtime,
         created,
       });
@@ -212,6 +223,15 @@ function listSessions() {
   }
   out.sort((a, b) => b.mtime - a.mtime);
   return out.slice(0, 60);
+}
+
+/** 把文件移到废纸篓（trash CLI），失败返回 false */
+function trashFile(p) {
+  return new Promise((resolve) => {
+    const child = spawn("/usr/bin/trash", [p]);
+    child.on("error", () => resolve(false));
+    child.on("exit", (code) => resolve(code === 0));
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -310,10 +330,64 @@ function setupIpc() {
     respondUi(payload.id, payload);
   });
 
-  ipcMain.handle("sessions:list", () => listSessions());
+  ipcMain.handle("sessions:list", (_e, filterDir) => listSessions(filterDir));
   ipcMain.on("sessions:open", () => {
     shell.openPath(SESSIONS_DIR);
   });
+
+  // 删除会话文件（进废纸篓，可恢复）
+  ipcMain.handle("sessions:delete", async (_e, file) => {
+    const resolved = path.resolve(String(file || ""));
+    const root = path.resolve(SESSIONS_DIR);
+    if (!resolved.startsWith(root + path.sep)) throw new Error("非法路径");
+    if (!fs.existsSync(resolved)) return { ok: false, reason: "not-found" };
+    let trashed = false;
+    try {
+      trashed = await trashFile(resolved);
+    } catch {
+      trashed = false;
+    }
+    if (!trashed) {
+      try {
+        fs.unlinkSync(resolved);
+        return { ok: true, trashed: false };
+      } catch (e) {
+        return { ok: false, reason: e.message };
+      }
+    }
+    return { ok: true, trashed: true };
+  });
+
+  // ---- 工作区 ----
+
+  ipcMain.handle("workspace:pick", async () => {
+    const r = await dialog.showOpenDialog(win, {
+      title: "选择工作区文件夹",
+      buttonLabel: "选择",
+      properties: ["openDirectory", "createDirectory"],
+    });
+    if (r.canceled || !r.filePaths.length) return null;
+    return r.filePaths[0];
+  });
+
+  // 切换工作区：更新 cwd 并重启 pi 子进程（exit 回调会自动拉起新进程）
+  ipcMain.handle("workspace:set", (_e, dir) => {
+    const resolved = path.resolve(String(dir || ""));
+    let st;
+    try {
+      st = fs.statSync(resolved);
+    } catch {
+      throw new Error("目录不存在");
+    }
+    if (!st.isDirectory()) throw new Error("不是文件夹");
+    workCwd = resolved;
+    if (pi && pi.exitCode === null && !pi.killed) pi.kill("SIGTERM");
+    return workCwd;
+  });
+
+  ipcMain.handle("workspace:get", () => workCwd);
+
+  ipcMain.handle("workspace:open", () => shell.openPath(workCwd));
 
   ipcMain.handle("rpc:restart", () => {
     if (pi) pi.kill("SIGTERM");

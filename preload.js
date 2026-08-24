@@ -24,8 +24,23 @@ contextBridge.exposeInMainWorld("piDesktop", {
   /** 回复扩展 UI 对话框请求 */
   uiResponse: (id, payload) => ipcRenderer.send("rpc:ui-response", { id, ...payload }),
 
-  /** 会话列表 */
-  listSessions: () => ipcRenderer.invoke("sessions:list"),
+  /** 会话列表（可按工作区过滤） */
+  listSessions: (filterDir) => ipcRenderer.invoke("sessions:list", filterDir),
+
+  /** 删除会话文件（进废纸篓） */
+  deleteSession: (file) => ipcRenderer.invoke("sessions:delete", file),
+
+  /** 选择工作区文件夹（系统对话框） */
+  pickWorkspace: () => ipcRenderer.invoke("workspace:pick"),
+
+  /** 设置工作区（重启 pi 引擎以使用新 cwd） */
+  setWorkspace: (dir) => ipcRenderer.invoke("workspace:set", dir),
+
+  /** 当前工作区路径 */
+  getWorkspace: () => ipcRenderer.invoke("workspace:get"),
+
+  /** 在 Finder 打开工作区 */
+  openWorkspace: () => ipcRenderer.invoke("workspace:open"),
 
   /** 在 Finder 打开会话目录 */
   openSessionsFolder: () => ipcRenderer.send("sessions:open"),

@@ -205,6 +205,52 @@ select option { background: #141a2b; color: var(--text); }
   margin: 10px 4px 4px;
 }
 
+/* ---- 工作区卡片 ---- */
+
+.workspace-card {
+  border: 1px solid rgba(124, 92, 255, 0.25);
+  border-radius: var(--radius-sm);
+  background: rgba(124, 92, 255, 0.07);
+  padding: 9px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  flex-shrink: 0;
+}
+.ws-head { display: flex; align-items: center; gap: 8px; }
+.ws-label {
+  flex: 1;
+  font-size: 11px;
+  letter-spacing: 1.5px;
+  color: var(--dim);
+  text-transform: uppercase;
+}
+.ws-path {
+  font-size: 11px;
+  font-family: var(--mono);
+  color: var(--muted);
+  background: rgba(0, 0, 0, 0.28);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 5px 8px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ws-actions { display: flex; align-items: center; gap: 8px; }
+.ws-check {
+  flex: 1;
+  font-size: 11px;
+  color: var(--muted);
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+}
+.ws-check input { accent-color: var(--accent); }
+
 .session-list { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 4px; }
 
 .session-item {
@@ -216,10 +262,36 @@ select option { background: #141a2b; color: var(--text); }
 }
 .session-item:hover { background: rgba(255,255,255,.05); }
 .session-item.active { background: rgba(124,92,255,.14); border-color: rgba(124,92,255,.35); }
-.session-item .si-name {
-  font-size: 12.5px; font-weight: 600;
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+.session-item .si-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
 }
+.session-item .si-row .si-name { flex: 1; }
+.si-del {
+  flex-shrink: 0;
+  background: none;
+  border: none;
+  color: var(--dim);
+  font-size: 11.5px;
+  cursor: pointer;
+  padding: 2px 5px;
+  border-radius: 5px;
+  opacity: 0;
+  transition: all .12s ease;
+  line-height: 1;
+}
+.session-item:hover .si-del { opacity: 1; }
+.si-del:hover { background: rgba(248, 113, 113, 0.15); color: var(--danger); }
+.si-del.confirm {
+  opacity: 1;
+  color: var(--danger);
+  background: rgba(248, 113, 113, 0.18);
+  font-weight: 700;
+  font-size: 10px;
+  padding: 3px 6px;
+}
+.si-del[disabled] { opacity: 0; pointer-events: none; }
 .session-item .si-sub {
   font-size: 11px; color: var(--muted);
   display: flex; justify-content: space-between; gap: 8px;
