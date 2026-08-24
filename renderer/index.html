@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; script-src 'self'" />
+  <title>pi desktop</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <!-- 顶栏 -->
+  <header id="titlebar">
+    <div class="brand">
+      <div class="logo">⬢</div>
+      <div class="brand-text">
+        <div class="brand-name">pi <span class="brand-dot">·</span> desktop</div>
+        <div class="brand-sub" id="session-name">untitled</div>
+      </div>
+    </div>
+
+    <div class="titlebar-center">
+      <div class="status-pill" id="status-pill">
+        <span class="status-dot" id="status-dot"></span>
+        <span id="status-text">启动中</span>
+      </div>
+      <select id="model-select" title="模型"></select>
+      <select id="thinking-select" title="思考级别"></select>
+    </div>
+
+    <div class="titlebar-right">
+      <div class="context-gauge" title="上下文用量">
+        <div class="gauge-track"><div class="gauge-fill" id="gauge-fill"></div></div>
+        <span class="gauge-label" id="gauge-label">—</span>
+      </div>
+      <button class="btn ghost" id="btn-compact" title="压缩上下文 (compact)">🗜 压缩</button>
+      <button class="btn ghost" id="btn-export" title="导出会话为 HTML">⇪ 导出</button>
+      <button class="btn danger ghost" id="btn-abort" title="中止当前任务 (abort)" hidden>■ 中止</button>
+    </div>
+  </header>
+
+  <div id="layout">
+    <!-- 左侧边栏 -->
+    <aside id="sidebar">
+      <button class="btn primary wide" id="btn-new">＋ 新建会话</button>
+      <button class="btn ghost wide" id="btn-refresh-sessions">⟳ 刷新会话</button>
+
+      <div class="sidebar-title">最近会话</div>
+      <div id="session-list" class="session-list"></div>
+
+      <div class="sidebar-footer">
+        <div class="rpc-state">
+          <span class="status-dot small" id="rpc-dot"></span>
+          <span id="rpc-text">pi 引擎</span>
+        </div>
+        <button class="btn ghost tiny" id="btn-restart">重启</button>
+        <button class="btn ghost tiny" id="btn-open-folder">会话目录</button>
+      </div>
+    </aside>
+
+    <!-- 主区 -->
+    <main id="main">
+      <div id="messages"></div>
+      <div id="empty-state" hidden>
+        <div class="empty-logo">⬢</div>
+        <h2>pi desktop</h2>
+        <p>现代桌面端 · 同一套模型、会话与扩展</p>
+      </div>
+
+      <!-- 输入区 -->
+      <div id="composer-wrap">
+        <div id="composer">
+          <textarea id="input" rows="1" placeholder="输入消息，Enter 发送，Shift+Enter 换行 …（支持 /命令 与 /skill:xxx）"></textarea>
+          <div class="composer-actions">
+            <span class="composer-hint" id="queue-hint" hidden></span>
+            <button class="btn primary" id="btn-send">发送 ↵</button>
+          </div>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <!-- 模态层（扩展 UI 对话框） -->
+  <div id="modal-overlay" hidden>
+    <div id="modal-card">
+      <div id="modal-title"></div>
+      <div id="modal-body"></div>
+      <div id="modal-actions"></div>
+    </div>
+  </div>
+
+  <!-- 通知 toast -->
+  <div id="toasts"></div>
+
+  <script src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,14 @@
+{
+  "name": "pi-desktop-app",
+  "version": "1.0.0",
+  "description": "现代化桌面端 — pi 的 GUI 客户端（Electron）",
+  "main": "main.js",
+  "private": true,
+  "scripts": {
+    "start": "node scripts/launch.js",
+    "smoke": "PI_DESKTOP_SMOKE=1 node scripts/launch.js --no-window"
+  },
+  "devDependencies": {
+    "electron": "^43.4.1"
+  }
+}
